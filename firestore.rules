@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        getUserData().role == 'admin' ||
+        request.auth.token.admin == true
+      );
+    }
+
+    function isSalesStaff() {
+      return isAuthenticated() && getUserData().role == 'sales_staff';
+    }
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User profiles & Role management
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      // Only existing Admins can create or modify user profiles and roles
+      // Prevents self-assignment of admin role by new users
+      allow create: if isAdmin() || (
+        isAuthenticated() && 
+        request.auth.uid == userId && 
+        request.resource.data.role == 'sales_staff'
+      );
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Products collection
+    match /products/{productId} {
+      // Authenticated staff can read active products
+      allow read: if isAuthenticated();
+      // Only Admin can create, update, or delete products and change master prices
+      allow write: if isAdmin();
+    }
+
+    // Suppliers collection
+    match /suppliers/{supplierId} {
+      // Only Admin can view and manage supplier costs and supplier profiles
+      allow read, write: if isAdmin();
+    }
+
+    // Retail shops collection
+    match /shops/{shopId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Wholesale Orders collection
+    match /orders/{orderId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        request.resource.data.status in ['Draft', 'Submitted']
+      );
+      // Admin can update or cancel orders. Sales staff can only update Draft orders.
+      allow update: if isAdmin() || (
+        isSalesStaff() && resource.data.status == 'Draft'
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Invoices collection
+    match /invoices/{invoiceId} {
+      allow read: if isAuthenticated();
+      // Only Admin can generate official commercial invoices
+      // Immutable: cannot update once issued except status change to Cancelled by Admin
+      allow create: if isAdmin();
+      allow update: if isAdmin() && (
+        request.resource.data.status == 'Cancelled' &&
+        resource.data.status == 'Issued'
+      );
+      allow delete: if false; // Invoices cannot be deleted to preserve audit trail
+    }
+
+    // Business Settings & Company Profile
+    match /business_settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}
